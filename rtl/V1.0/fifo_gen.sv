@@ -35,7 +35,7 @@ parameter ADD_WIDTH=$clog2(DEPTH)
     output logic                  full_flag  
 );
 
-    logic [DATA_WIDTH-1:0] mem [DEPTH-1:0];
+    logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
     logic [ADD_WIDTH-1:0]  wr_ptr, rd_ptr, count;
 
     // Memory write
