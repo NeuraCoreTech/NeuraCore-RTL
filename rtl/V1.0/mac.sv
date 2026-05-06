@@ -1,5 +1,4 @@
 `timescale 1ns / 1ps
-
 (* use_dsp = "yes" *)
 module mac#(
     parameter DATA_WIDTH = 8,
@@ -8,43 +7,37 @@ module mac#(
     input  logic clk,
     input  logic ce,
     input  logic sclr,
-    input  logic [DATA_WIDTH-1:0]  ifmap,
-    input  logic [DATA_WIDTH-1:0]  filter,
-    input  logic [MULT_WIDTH-1:0]  psumin,   // ← 24b
-    output logic [MULT_WIDTH-1:0]  psumout   // ← 24b
+    input  logic signed [DATA_WIDTH-1:0]  ifmap,
+    input  logic signed [DATA_WIDTH-1:0]  filter,
+    input  logic signed [MULT_WIDTH-1:0]  psumin,
+    output logic signed [MULT_WIDTH-1:0]  psumout
 );
-    // Internal signals
-    logic [MULT_WIDTH-1:0] mac_out;
-    logic [MULT_WIDTH-1:0] c_ext;
-
-    // psumin already MULT_WIDTH so no extension needed
-    assign c_ext = psumin;
-
+    // psumin is already MULT_WIDTH - no extension needed
+    
     // ================================
     // Xilinx Multiply-Adder IP
+    // Latency: A:B-P = 3, C-P = 2 → 5 cycles total
+    // Output P is already registered inside the IP
     // ================================
-    xbip_multadd_8bit mac_ip (
-        .CLK(clk),
-        .CE(ce),
-        .SCLR(sclr),
-        .A(ifmap),
-        .B(filter),
-        .C(c_ext),
-        .SUBTRACT(1'b0),
-        .P(mac_out),
-        .PCOUT()
-    );
-
-    // ================================
-    // Output stage - NO saturation
-    // just register mac_out directly
-    // BN+quantize handles range later
-    // ================================
-    always_ff @(posedge clk) begin
-        if (sclr)
-            psumout <= '0;
-        else if (ce)
-            psumout <= mac_out;   // ← just pass through, no clamping
+    logic signed [MULT_WIDTH-1:0] buffer_psumin;
+    always_ff @(posedge clk)begin
+        if (sclr) begin
+            buffer_psumin<='0;
+        end
+        else begin
+            buffer_psumin<=psumin;
+        end
     end
+    xbip_multadd_8bit mac_ip (
+        .CLK      (clk),
+        .CE       (ce),
+        .SCLR     (sclr),
+        .A        (ifmap),
+        .B        (filter),
+        .C        (buffer_psumin),
+        .SUBTRACT (1'b0),
+        .P        (psumout),   // ← direct wire, no extra FF
+        .PCOUT    ()
+    );
 
 endmodule
