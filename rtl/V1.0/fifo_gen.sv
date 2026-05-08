@@ -36,7 +36,8 @@ parameter ADD_WIDTH=$clog2(DEPTH)
 );
 
     logic [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-    logic [ADD_WIDTH-1:0]  wr_ptr, rd_ptr, count;
+    logic [ADD_WIDTH-1:0]  wr_ptr, rd_ptr;
+    logic [ADD_WIDTH:0] count;
 
     // Memory write
     always_ff @(posedge clk) begin
@@ -67,6 +68,6 @@ parameter ADD_WIDTH=$clog2(DEPTH)
     end
 
     assign empty_flag = (count == '0); 
-    assign full_flag  = (count == DEPTH);
+    assign full_flag = (count == ADD_WIDTH+1'(DEPTH));
 
 endmodule
