@@ -66,8 +66,8 @@ Implemented / planned modules:
 ---
 ## Contributors
 
--Krishna H. Patil
--Arnav Yadnopavit
+- Krishna H. Patil
+- Arnav Yadnopavit
 
 ## Disclaimer
 
