@@ -21,20 +21,20 @@
 //   12 > 3 (MAC latency) → write-back lands before next read of same slot. ✓
 //
 // ┌─────────────────────────────────────────────────────────────────┐
-// │ STATE MACHINE                                                    │
-// │                                                                  │
-// │  IDLE → FILTER_LOAD → IFMAP_LOAD → [PSUM_LOAD] →               │
+// │ STATE MACHINE                                                   │
+// │                                                                 │
+// │  IDLE → FILTER_LOAD → IFMAP_LOAD → [PSUM_LOAD] →                │
 // │         COMPUTE → PSUM_DRAIN → PE_DONE → IDLE                   │
-// │                                                                  │
+// │                                                                 │
 // │  FILTER_LOAD : stream num_filters×num_channels×3 weights        │
-// │                into kernel scratchpad (valid/ready)              │
+// │                into kernel scratchpad (valid/ready)             │
 // │  IFMAP_LOAD  : stream num_channels×3 pixels into ifmap spad     │
 // │  PSUM_LOAD   : optional pre-load of num_filters psums from LN   │
-// │                (skipped when cfg_psum_in_valid=0)                │
+// │                (skipped when cfg_psum_in_valid=0)               │
 // │  COMPUTE     : run (x,f,c,k) MAC loop, write-back via           │
-// │                3-deep pipeline tag shift register                │
+// │                3-deep pipeline tag shift register               │
 // │  PSUM_DRAIN  : read psum spad → push to output fifo_block       │
-// │  PE_DONE     : 1-cycle done pulse                                │
+// │  PE_DONE     : 1-cycle done pulse                               │
 // └─────────────────────────────────────────────────────────────────┘
 //
 // SCRATCHPAD PORT NAMES (must match your existing modules exactly):
@@ -96,6 +96,7 @@ module PEControlUnit #(
     //------------------------------------------------------------------
     input  logic                  ifmap_valid,
     input  logic [DATA_WIDTH-1:0] ifmap_data,
+    input  logic                  ifmap_fresh,  
     output logic                  ifmap_ready,
 
     //------------------------------------------------------------------
@@ -163,7 +164,8 @@ module PEControlUnit #(
         PSUM_LOAD   = 3'd3,
         COMPUTE     = 3'd4,
         PSUM_DRAIN  = 3'd5,
-        PE_DONE     = 3'd6
+        PE_DONE     = 3'd6,
+        PSUM_CLEAR  = 3'd7   // zero-fill psum spad when no LN pre-load
     } state_t;
 
     state_t state, next_state;
@@ -231,18 +233,22 @@ module PEControlUnit #(
                     psum_cnt   <= '0;
                 end
                 FILTER_LOAD: begin
-                    if (filt_fire)  filter_cnt <= filter_cnt + 1'b1;
                     if (next_state != FILTER_LOAD) filter_cnt <= '0;
+                    else if (filt_fire)            filter_cnt <= filter_cnt + 1'b1;
                 end
                 IFMAP_LOAD: begin
-                    if (imap_fire)  ifmap_cnt <= ifmap_cnt + 1'b1;
-                    if (next_state != IFMAP_LOAD) ifmap_cnt <= '0;
+                    if (next_state != IFMAP_LOAD)  ifmap_cnt <= '0;
+                    else if (imap_fire)            ifmap_cnt <= ifmap_cnt + 1'b1;
                 end
                 PSUM_LOAD: begin
-                    if (psin_fire)  psum_cnt <= psum_cnt + 1'b1;
                     if (next_state == COMPUTE) psum_cnt <= '0;
+                    else if (psin_fire)        psum_cnt <= psum_cnt + 1'b1;
                 end
                 COMPUTE: psum_cnt <= '0;
+                PSUM_CLEAR: begin
+                    if (next_state == COMPUTE) psum_cnt <= '0;
+                    else                       psum_cnt <= psum_cnt + 1'b1;
+                end
                 PSUM_DRAIN: begin
                     if (drain_fire) psum_cnt <= psum_cnt + 1'b1;
                 end
@@ -324,7 +330,7 @@ module PEControlUnit #(
 
     logic compute_finished;
     assign compute_finished = draining &&
-                              (drain_cnt == ($clog2(MAC_LATENCY+1))'(MAC_LATENCY - 1));
+                              (drain_cnt == ($clog2(MAC_LATENCY+1))'(MAC_LATENCY));
 
     //==========================================================================
     // PIPELINE TAG  (3-deep shift register)
@@ -369,7 +375,11 @@ module PEControlUnit #(
 
             IFMAP_LOAD:
                 if (imap_fire && (ifmap_cnt == ifmap_total - 1'b1))
-                    next_state = use_psum_in ? PSUM_LOAD : COMPUTE;
+                    next_state = use_psum_in ? PSUM_LOAD : PSUM_CLEAR;
+
+            PSUM_CLEAR:
+                if (psum_cnt == PSUM_AW'(num_filters) - 1'b1)
+                    next_state = COMPUTE;
 
             PSUM_LOAD:
                 if (psin_fire && (psum_cnt == PSUM_AW'(num_filters) - 1'b1))
@@ -431,6 +441,11 @@ module PEControlUnit #(
             psum_we       = 1'b1;
             psum_addr_wr  = psum_cnt;
             psum_data_in  = psum_in_data;
+        end else if (state == PSUM_CLEAR) begin
+            // Zero-fill psum spad before first COMPUTE (no LN pre-load)
+            psum_we       = 1'b1;
+            psum_addr_wr  = psum_cnt;
+            psum_data_in  = '0;
         end else if (state == COMPUTE && v_tag[MAC_LATENCY-1]) begin
             // Write-back MAC result to correct filter slot
             psum_we       = 1'b1;
@@ -457,7 +472,8 @@ module PEControlUnit #(
     // mac_sclr: clear when not computing (keeps MAC clean between tiles)
     assign mac_ce   = (state == COMPUTE);
     assign mac_sclr = (state == IDLE) || (state == FILTER_LOAD) ||
-                      (state == IFMAP_LOAD) || (state == PSUM_LOAD);
+                      (state == IFMAP_LOAD) || (state == PSUM_LOAD) ||
+                      (state == PSUM_CLEAR);
 
     //------ done pulse -------------------------------------------------------
     assign done = (state == PE_DONE);

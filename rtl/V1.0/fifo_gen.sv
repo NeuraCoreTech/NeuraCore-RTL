@@ -45,11 +45,8 @@ parameter ADD_WIDTH=$clog2(DEPTH)
             mem[wr_ptr] <= data_in;
     end
 
-    // Read output
-    always_ff @(posedge clk) begin
-        if (re && !empty_flag)
-            data_out <= mem[rd_ptr];
-    end
+    // Combinatorial (first-word-fall-through): data_out valid same cycle as re asserted
+    assign data_out = mem[rd_ptr];
 
     // Pointer and count control
     always_ff @(posedge clk or posedge reset) begin
@@ -68,6 +65,6 @@ parameter ADD_WIDTH=$clog2(DEPTH)
     end
 
     assign empty_flag = (count == '0); 
-    assign full_flag = (count == ADD_WIDTH+1'(DEPTH));
+    assign full_flag = (count == (ADD_WIDTH+1)'(DEPTH));
 
 endmodule

@@ -126,6 +126,7 @@ module PE_top #(
     logic                   ctrl_fifo_we;
     logic [PSUM_WIDTH-1:0]  ctrl_fifo_data_in;
     logic                   fifo_full;
+    logic                   psum_out_valid_n;  // active-low empty from fifo_block
 
     //=========================================================================
     // u_ctrl : PEControlUnit
@@ -268,7 +269,6 @@ module PE_top #(
 
     //=========================================================================
     // u_psum_fifo : fifo_block
-    logic psum_out_valid_n;   // active-low empty; inverted to psum_out_valid
     // Holds completed psums until the NoC GON or LN reads them out.
     // DEPTH=32 ensures a full tile (up to 24 psums) always fits without stall.
     //=========================================================================
