@@ -1,0 +1,57 @@
+NeuraCore-RTL Structural Constraints & Software Lowering Notes
+==============================================================
+
+Summary
+-------
+Dense only; fixed 3x3 kernel, stride 1, no hardware zero-padding (pad upstream);
+unsigned 8-bit weights; no depthwise mode; software lowering required for other
+layer shapes.
+
+What Is Parameterized at Runtime (Without Re-Synthesis)
+-------------------------------------------------------
+- Output vector width (E <= 16, via MAXOFMAP)
+- Active filter channels per PE (nf <= 24, via MAXKERNELS)
+- Active input channels (nc <= 4, via MAXCHANNELS)
+- Cluster dimensions (PE_ROWS, PE_COLS) and NoC mesh dimensions (MESH_X, MESH_Y)
+- NoC routing paths and multicast group parameters (K, G, PH)
+
+What Is Structurally Fixed in Hardware
+--------------------------------------
+1. Dense Only (No Sparsity / Zero-Skipping)
+   - Every weight and activation is processed sequentially; zero values still
+     consume a MAC cycle (affects efficiency only, not arithmetic correctness).
+
+2. Fixed 3x3 Kernel Size (S = 3)
+   - PEControlUnit and cluster_top hardcode 3 spatial taps (k in 0..2) in the
+     FSM loop bounds, filter scratchpad indexing (nc * 3), and MAC pipeline
+     schedule (MAC_LATENCY = 4).
+
+3. Fixed Stride 1
+   - IFmap scratchpad read address generation steps linearly by +x
+     (addr = c * W + x + k, where W = E + 2).
+
+4. No Hardware Zero-Padding (Pad Upstream)
+   - There is no boundary comparator or zero-injection mux on the IFmap
+     scratchpad output; border pixels must be padded in software/GLB before
+     streaming into the NoC.
+
+5. Unsigned 8-Bit Operands
+   - xbip_multadd_8bit is instantiated with unsigned 8-bit A (IFmap) and B
+     (Weight) ports and 24-bit accumulation. Signed weights require either
+     reconfiguring the IP core to signed B or applying an unsigned +128 offset
+     correction in software.
+
+6. No Depthwise Convolution Mode
+   - Vertical partial-sum chaining unconditionally accumulates lower PE row
+     outputs into upper PE rows along each column. Depthwise layers require
+     disabling inter-row accumulation and draining each row independently.
+
+Software Lowering & Future Hardware Headroom
+--------------------------------------------
+- Non-native layer shapes (1x1 pointwise, 5x5 kernels, stride-2 layers) are
+  handled by decomposing ("lowering") them into 3x3 stride-1 sub-tiles in
+  host software/compiler before streaming to the accelerator.
+- With 36,554 / 63,400 LUTs used (57.7% utilization on xc7a100t-csg324-1),
+  ~26,846 LUTs (~42.3%) remain available for future hardware extensions (such
+  as 1x1 mode, stride-2 muxing, on-the-fly padding, depthwise bypass, or the
+  Global Buffer subsystem).
