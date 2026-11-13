@@ -1,0 +1,71 @@
+LIMITATIONS
+
+Scope: dense 3x3 convolution, stride 1, no padding, unsigned 8-bit operands,
+24-bit accumulation. Layer shapes outside this need software lowering, which is
+planned and not implemented.
+
+What the hardware does and does not support
+-------------------------------------------
+Dense only
+  No zero-skipping. A zero operand still costs a MAC cycle. Results stay correct.
+
+3x3, stride 1, no padding
+  The kernel width is fixed at 3. The address math, stream formats and testbench all
+  assume it, and other values of MAXKERNELWIDTH have not been validated.
+  Stride 2 would need a different address step and ifmap packing.
+  Padding is done upstream; there is no pad-on-the-fly logic.
+
+Unsigned operands
+  The multiply-add IP is configured unsigned for both operands. Negative weights give
+  errors that are exact multiples of 256. Planned workaround: store w+128 and subtract
+  128 x sum(x), with the sum from one extra all-ones filter in the same tile
+  [estimate]. Not implemented.
+
+No depthwise convolution
+  The vertical psum chain sums across rows, which is wrong for depthwise layers.
+
+Tile limits (compile-time parameters)
+  E (output columns) <= 16, filters per PE <= 24, channels <= 4.
+  Wider or deeper layers must be tiled in software.
+
+No post-MAC processing
+  The engine emits raw 24-bit psums. Bias, ReLU, requantization and pooling are not
+  implemented and are assumed to run in software.
+
+Performance limits
+------------------
+Chained rows run one after another
+  A row waits in PSUM_LOAD for the row below to finish compute and drain, so per-PE
+  utilization falls roughly as 1/ROWS. Measured on E=16, nf=24, nc=4: 42.9% at 2 rows,
+  22.2% at 4 rows [xsim]. Throughput figures that assume 100% duty are upper bounds.
+
+Small tiles
+  When nf < MAC_LATENCY + 1 = 5, the f loop is padded with bubble cycles. Filter loading
+  is serial, so low-E tiles spend more time loading than computing.
+
+Psum network area
+  The psum mesh is 7,416 LUTs, about 20% of the design, because each router has
+  dedicated per-cluster result ports (13 ports). Merging streams would need tagged words
+  and arbitration.
+
+System limits
+-------------
+- No global buffer, stream engines or layer sequencer. The testbenches model the GLB as
+  streams.
+- Timing was met at 8.0 ns in one routed out-of-context run with thin setup margin
+  (WNS +0.061 ns). Real I/O and a global buffer have not been in the timing path.
+- Implementation numbers are for xc7a100t. xc7z020 has not been synthesized.
+- The golden model shares the RTL's stream ordering. An independent int8 reference has
+  not been written.
+- Power and energy are not measured.
+
+Planned software lowering (not implemented; costs are estimates)
+----------------------------------------------------------------
+Layer type              Transformation                              Cost
+Padding                 pad in software                             none
+5x5 / 7x7 kernel        split into 3x3 pieces, sum via psum_in      ~36/25 of minimum MACs for 5x5
+Stride 2                run stride 1, discard 3 of 4 outputs        up to 4x wasted MACs
+                        (or polyphase sub-convolutions)
+Signed weights          w+128 offset trick (see above)              one filter slot per tile
+FC / 1x1                reshape into groups of 3, E=1 tiles         no weight reuse, bandwidth bound
+Depthwise               unsupported                                 -
