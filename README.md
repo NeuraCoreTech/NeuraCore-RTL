@@ -104,7 +104,7 @@ single 8.0 ns clock constraint on `clk`.
 
 ## Not yet done
 
-Global buffer (BRAM banks and stream engines), layer sequencer, mesh generator, board
+Global buffer (BRAM banks and stream engines), layer sequencer, layer config generator (router/node config words for a given mesh size and layer mapping; the testbench currently hard-codes them for a 2x2 mesh), board
 bring-up, independent int8 reference model, benchmarks, power measurement, synthesis for
 `xc7z020`.
 
