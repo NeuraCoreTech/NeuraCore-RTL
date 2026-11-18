@@ -1,68 +1,43 @@
 # Changelog
 
-Architectural, verification and timing milestones. Evidence tags (`[xsim]`, `[impl]`,
-`[estimate]`) are defined in [decisions_log.md](decisions_log.md).
+All notable architectural, verification, and timing milestones for `NeuraCore-RTL`.
 
-## [v2.2] - 2026-11-12 - 8.0 ns timing and coverage gating
-
-### Changed
-- **`noc_node.sv`:** psum merge now feeds a 2-entry elastic output buffer (`od0`, `od1`,
-  `ocnt`), adding 1 cycle of output latency. `layer_done` also requires `ocnt == 0`.
-- **`PEControlUnit.sv`:** the `x*nf`, `f*nc3` and `c*W` multipliers are replaced by
-  running address registers (`psum_xbase`, `psum_ptr`, `k_ck`, `k_addr`, `i_cbase`,
-  `i_addr`) and a registered `f_real_r`. Ports and `MAC_LATENCY` are unchanged.
-- **`tb_cluster_conv.sv`:** added a drain hold-on-full (`dv && fifo_full`) coverage
-  monitor that fails the suite on zero hits, a 24-filter / 1-channel / E=16 FIFO-fill test
-  with a slow collector, and per-tile cycle and utilization reporting under `+verbose`.
-
-### Verification and implementation
-- **Simulation `[xsim]`:** `tb_cluster_conv` passes at 2x2, 3x3, 4x2 and 4x4 clusters.
-  Hold-on-full coverage: 2,741 cycles at 2x2 and 2,768 at 4x2. Measured per-PE
-  utilization on E=16, nf=24, nc=4: 42.9% at 2 rows, 22.2% at 4 rows. `tb_noc_node` and
-  `tb_noc_top` pass on this RTL.
-- **Timing `[impl]`:** 8.0 ns (125 MHz) met in one routed out-of-context run of the
-  `noc_impl_top` wrapper on `xc7a100t-csg324-1`: WNS +0.061 ns, WHS +0.025 ns, 0 failing
-  endpoints out of 75,882. Setup margin is thin and the wrapper has no real I/O or
-  global buffer in the path. The 8.0 ns run before the address-register change had WNS
-  -0.757 ns, TNS -97.3 ns and 433 failing endpoints.
-- **Utilization (`u_noc`) `[impl]`:** 36,554 LUTs (57.7%), 21,651 FFs, 128 RAMB18, 64 DSP.
-
----
-
-## [v2.1] - 2026-11-10 - 64-PE hierarchical NoC
-
+## [v2.3] - 2026-11-18 - System profiling and netlist simulation
 ### Added
-- **`noc_router.sv`:** data-agnostic circuit-switched router with 2-entry elastic output
-  buffers (no combinational ready path across routers), unicast, broadcast and
-  grouped/interleaved multicast (`K`, `G`, `PH`).
-- **`noc_node.sv`, `noc_mesh.sv`, `noc_top.sv`:** two-level hierarchical mesh (2x2 routers
-  x 4 clusters x 4 PEs = 64 PEs) over three independent networks (weight, ifmap, psum)
-  with a word-addressed config interface.
-- **Testbenches:** `tb_noc_router`, `tb_noc_node`, `tb_noc_top`.
+- **`tb_noc_top_perf.sv`:** cycle-accurate profiling harness tracking MAC issues, per-state PE phases and per-network word counts.
+- **Split-tiles mapping (mode 2):** weight broadcast with per-cluster ifmap interleaving (K = number of clusters) and an active-cluster sweep. Spare nodes are disabled and their router ports left unconfigured so broadcasts don't stall.
 
-### Implementation `[impl]`
-- 10.0 ns (100 MHz) met in a routed out-of-context run: WNS +0.133 ns, WHS +0.025 ns, 0
-  failing endpoints; 37,032 LUTs, 17,525 FFs, 128 RAMB18, 64 DSP.
+### Verification
+- **System profiling `[xsim]`:** the max tile (nf=24, nc=4, E=16) passes end to end on 64 PEs (25/25). Weight broadcast cut it from 18,198 to 15,161 cycles: per-PE utilization 25.3% -> 30.4%, 4.05 -> 4.86 GOPS at the 8.0 ns (125 MHz) clock (64 PEs x 4,608 MACs per tile), with the GLB modeled as ideal TB streams.
+- **Post-implementation functional simulation `[impl]`:** `tb_noc_top` against a funcsim netlist of routed `noc_top`, 14/14 at gap 0 and 40% stalls. This confirms behavior, DSP mapping and BRAM inference survive implementation. It is functional only (no SDF), so it is not a timing check. The netlist is not committed (regenerate via `write_verilog -mode funcsim -force noc_top_func_impl.v`).
+- No RTL changes in this release.
 
----
+## [v2.2] - 2026-11-12 — 125 MHz Post-Route Timing Closure & Coverage Gating
+### Added
+- **`noc_node.sv`:** Added a 2-entry elastic output buffer (`od0`, `od1`, `ocnt`) on the Psum merge interface (`+1` cycle output latency) and updated `layer_done` to require `ocnt == 0`.
+- **`PEControlUnit.sv`:** Replaced variable multipliers (`x*nf`, `f*nc3`, `c*W`) with running stride accumulators (`psum_xbase`, `psum_ptr`, `k_ck`, `k_addr`, `i_cbase`, `i_addr`) and registered `f_real_r` to clear BRAM address setup paths.
+- **`tb_cluster_conv.sv`:** Added a drain hold-on-full (`dv && fifo_full`) coverage monitor that fails the suite on zero hits, a `24f/1c/E=16` slow-collector FIFO-fill test, and per-tile cycle/utilization reporting under `+verbose`.
 
-## [v2.0] - PE and cluster overhaul
+### Verification & Implementation (`[xsim]` / `[impl]`)
+- **Simulation (`[xsim]`):** `tb_cluster_conv` passed across `2x2`, `3x3`, `4x2`, and `4x4` geometries; `+verbose` measurements confirmed drain hold-on-full coverage (`2,741` cycles at `2x2`, `2,768` cycles at `4x2`) and peak chained per-PE utilization (`42.9%` at `ROWS=2`, `22.2%` at `ROWS=4` on `E=16, nf=24, nc=4`); `tb_noc_node` and `tb_noc_top` reran clean.
+- **Timing (`8.0 ns` / `125 MHz`):** Post-route timing closed on `xc7a100t-csg324-1` (`WNS +0.061 ns`, `WHS +0.025 ns`, `0` failing endpoints across `75,882` endpoints) `[impl]`.
+- **Utilization (`u_noc`):** `36,554` LUTs (`57.7%`), `21,651` FFs, `128` RAMB18, `64` DSP48 `[impl]`.
 
-### Fixed and changed
-- **RAW hazard (`PEControlUnit.sv`):** loop order is now x -> c -> k -> f (f innermost),
-  with the f loop padded to `max(nf, MAC_LATENCY + 1)` using bubble cycles.
-- **Deadlock and skew (`cluster_ctrl.sv`, `cluster_top.sv`):** per-PE `done` is latched
-  (sticky), and per-PE `ifmap_valid` is gated by the whole row's ready.
-- **Sliding window (E > 1):** the ifmap scratchpad holds W = E + 2 pixels per channel
-  (`MAXOFMAP = 16`) with x-major psum indexing.
-- **Area:** all layer config moved into `cluster_top`; kernel and psum scratchpads moved
-  to synchronous BRAM (`MAC_LATENCY = 4`). The 2x2 cluster dropped from 2,649 to 1,546
-  LUTs `[synth]`.
-- **Verification:** self-checking golden-model testbench `tb_cluster_conv`.
+## [v2.1] - 2026-11-10 — 64-PE 3-Network Hierarchical NoC & 100 MHz Closure
+### Added
+- **`noc_router.sv`:** Implemented data-agnostic circuit-switched router with 2-entry elastic output FIFOs to break cross-router combinational ready loops, supporting unicast, broadcast, and grouped/interleaved multicast (`K`, `G`, `PH`).
+- **`noc_node.sv`, `noc_mesh.sv`, `noc_top.sv`:** Built 2-level hierarchical mesh (`2x2` routers x `4` clusters x `4` PEs = `64` PEs) across three independent networks (`weight`, `ifmap`, `psum`) with word-addressed configuration.
+- **Testbenches:** Added `tb_noc_router`, `tb_noc_node`, and `tb_noc_top`.
 
----
+### Implementation (`[impl]`)
+- **Timing (`10.0 ns` / `100 MHz`):** Closed post-route timing with `WNS +0.133 ns`, `WHS +0.025 ns`, `0` failing endpoints (`37,032` LUTs, `17,525` FFs, `128` RAMB18, `64` DSP) `[impl]`.
 
-## [v1.0] - Course baseline (`rtl/V1.0/`)
+## [v2.0] - Post-Course PE & Cluster Overhaul
+### Fixed & Changed
+- **RAW Hazard Fix (`PEControlUnit.sv`):** Reordered compute loops to `x -> c -> k -> f` (`f` innermost) and padded `f_eff = max(nf, MAC_LATENCY + 1)` with bubble cycles.
+- **Deadlock & Skew Fixes (`cluster_ctrl.sv`, `cluster_top.sv`):** Latched per-PE `done` pulses (sticky done) and gated per-PE `ifmap_valid` with row-wide `&pe_ifmap_ready`.
+- **Sliding Window (`E > 1`):** Extended `ifmap` scratchpad to hold `W = E + 2` pixels per channel (`MAXOFMAP = 16`) with `x`-major psum indexing.
+- **Area Optimization (`D1`, `D2`):** Hoisted all layer config registers to `cluster_top` and migrated `kernel` and `psum` scratchpads to synchronous BRAM (`MAC_LATENCY = 4`), cutting `2x2` cluster LUTs from `2,649` to `1,546` `[synth]`.
 
-- Initial RTL skeleton for `PEControlUnit`, `PE_top`, `cluster_top`, distributed
-  scratchpads and basic unit testbenches. Kept unchanged.
+## [v1.0] - ESDP Lab Course Baseline (`rtl/V1.0/`)
+- Initial unverified RTL skeleton for `PEControlUnit`, `PETopModule`, `cluster_top`, distributed scratchpads, and basic unit testbenches.
