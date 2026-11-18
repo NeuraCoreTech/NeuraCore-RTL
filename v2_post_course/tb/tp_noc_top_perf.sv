@@ -379,7 +379,7 @@ module tb_noc_top_perf;
 
         lay  = real'(t_end - t_start);
         util = (lay > 0.0) ? 100.0 * real'(pe_mac_cyc) / (real'(R*ncl*NPE) * lay) : 0.0;
-        gops = (lay > 0.0) ? 2.0 * real'(pe_mac_cyc) / (lay * 10.0) : 0.0; // 100 MHz, ideal GLB
+       gops = (lay > 0.0) ? 2.0 * real'(pe_mac_cyc) / (lay * 8.0) : 0.0; // 125 MHz, ideal GLB
         if (pe_mac_cyc != R*ncl*NPE*nf*nc*K*E) begin
             errs_run++;
             $display("  MAC count %0d != expected %0d", pe_mac_cyc, R*ncl*NPE*nf*nc*K*E);
