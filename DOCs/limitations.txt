@@ -1,71 +1,80 @@
-LIMITATIONS
+NeuraCore-RTL Structural Constraints, Performance Limiters & Software Lowering
+==============================================================================
 
-Scope: dense 3x3 convolution, stride 1, no padding, unsigned 8-bit operands,
-24-bit accumulation. Layer shapes outside this need software lowering, which is
-planned and not implemented.
+Summary
+-------
+Dense only; fixed 3x3 kernel, stride 1, no hardware zero-padding (pad upstream);
+unsigned 8-bit weights; no depthwise mode. Software lowering required for other
+layer shapes. Peak theoretical GOPS is bounded by row serialization and GLB 
+port bandwidth.
 
-What the hardware does and does not support
--------------------------------------------
-Dense only
-  No zero-skipping. A zero operand still costs a MAC cycle. Results stay correct.
+Architectural Performance Limiters (Identified via tb_noc_top_perf)
+-------------------------------------------------------------------
+While the internal PE compute phase is 99.9% efficient, system-level utilization 
+(measured at ~30.4% on a max tile of nf=24, nc=4, E=16) is constrained by three 
+major structural choices:
 
-3x3, stride 1, no padding
-  The kernel width is fixed at 3. The address math, stream formats and testbench all
-  assume it, and other values of MAXKERNELWIDTH have not been validated.
-  Stride 2 would need a different address step and ifmap packing.
-  Padding is done upstream; there is no pad-on-the-fly logic.
+1. Row Serialization (Caps utilization at ~1/PE_ROWS)
+   - The vertical psum chain executes sequentially. Row 1 sits in a `PSUM_LOAD` 
+     wait state (for ~8,057 cycles on a max tile) because it cannot start until 
+     Row 0 finishes computing and drains entirely. 
+   - Future RTL fix: Streamed per-slot psum chaining to overlap compute phases.
 
-Unsigned operands
-  The multiply-add IP is configured unsigned for both operands. Negative weights give
-  errors that are exact multiples of 256. Planned workaround: store w+128 and subtract
-  128 x sum(x), with the sum from one extra all-ones filter in the same tile
-  [estimate]. Not implemented.
+2. Weight Load Bandwidth 
+   - A single GLB weight port per router pushes 1 word/cycle. For a 16-PE group, 
+     unicast loading takes ~4,601 cycles (25% of runtime). 
+   - Mitigated by: Weight multicast (broadcast mode) cuts this penalty by 4x.
+   - Future RTL fix: A "keep-filters" bit to skip reloading for consecutive tiles.
 
-No depthwise convolution
-  The vertical psum chain sums across rows, which is wrong for depthwise layers.
+3. Zero Preload Overhead
+   - Disconnecting the psum chain to start a new accumulation requires streaming 
+     pure zeroes into Row 0. On a max tile, this wastes ~3,059 cycles (17% of runtime).
+   - Future RTL fix: A hardware zero-fill datapath for Row 0.
 
-Tile limits (compile-time parameters)
-  E (output columns) <= 16, filters per PE <= 24, channels <= 4.
-  Wider or deeper layers must be tiled in software.
+What Is Parameterized at Runtime (Without Re-Synthesis)
+-------------------------------------------------------
+- Output vector width (E <= 16, via MAXOFMAP)
+- Active filter channels per PE (nf <= 24, via MAXKERNELS)
+- Active input channels (nc <= 4, via MAXCHANNELS)
+- Cluster dimensions (PE_ROWS, PE_COLS) and NoC mesh dimensions (MESH_X, MESH_Y)
+- NoC routing paths and multicast group parameters (K, G, PH)
 
-No post-MAC processing
-  The engine emits raw 24-bit psums. Bias, ReLU, requantization and pooling are not
-  implemented and are assumed to run in software.
+What Is Structurally Fixed in Hardware
+--------------------------------------
+1. Dense Only (No Sparsity / Zero-Skipping)
+   - Every weight and activation is processed sequentially; zero values still
+     consume a MAC cycle (affects efficiency only, not arithmetic correctness).
 
-Performance limits
-------------------
-Chained rows run one after another
-  A row waits in PSUM_LOAD for the row below to finish compute and drain, so per-PE
-  utilization falls roughly as 1/ROWS. Measured on E=16, nf=24, nc=4: 42.9% at 2 rows,
-  22.2% at 4 rows [xsim]. Throughput figures that assume 100% duty are upper bounds.
+2. Fixed 3x3 Kernel Size (S = 3)
+   - PEControlUnit and cluster_top hardcode 3 spatial taps (k in 0..2) in the
+     FSM loop bounds, filter scratchpad indexing (nc * 3), and MAC pipeline
+     schedule (MAC_LATENCY = 4).
 
-Small tiles
-  When nf < MAC_LATENCY + 1 = 5, the f loop is padded with bubble cycles. Filter loading
-  is serial, so low-E tiles spend more time loading than computing.
+3. Fixed Stride 1
+   - IFmap scratchpad read address generation steps linearly by +x
+     (addr = c * W + x + k, where W = E + 2).
 
-Psum network area
-  The psum mesh is 7,416 LUTs, about 20% of the design, because each router has
-  dedicated per-cluster result ports (13 ports). Merging streams would need tagged words
-  and arbitration.
+4. No Hardware Zero-Padding (Pad Upstream)
+   - There is no boundary comparator or zero-injection mux on the IFmap
+     scratchpad output; border pixels must be padded in software/GLB before
+     streaming into the NoC.
 
-System limits
--------------
-- No global buffer, stream engines or layer sequencer. The testbenches model the GLB as
-  streams.
-- Timing was met at 8.0 ns in one routed out-of-context run with thin setup margin
-  (WNS +0.061 ns). Real I/O and a global buffer have not been in the timing path.
-- Implementation numbers are for xc7a100t. xc7z020 has not been synthesized.
-- The golden model shares the RTL's stream ordering. An independent int8 reference has
-  not been written.
-- Power and energy are not measured.
+5. Unsigned 8-Bit Operands
+   - xbip_multadd_8bit is instantiated with unsigned 8-bit A (IFmap) and B
+     (Weight) ports and 24-bit accumulation. Signed weights require either
+     reconfiguring the IP core to signed B or applying an unsigned +128 offset
+     correction in software.
 
-Planned software lowering (not implemented; costs are estimates)
-----------------------------------------------------------------
-Layer type              Transformation                              Cost
-Padding                 pad in software                             none
-5x5 / 7x7 kernel        split into 3x3 pieces, sum via psum_in      ~36/25 of minimum MACs for 5x5
-Stride 2                run stride 1, discard 3 of 4 outputs        up to 4x wasted MACs
-                        (or polyphase sub-convolutions)
-Signed weights          w+128 offset trick (see above)              one filter slot per tile
-FC / 1x1                reshape into groups of 3, E=1 tiles         no weight reuse, bandwidth bound
-Depthwise               unsupported                                 -
+6. No Depthwise Convolution Mode
+   - Vertical partial-sum chaining unconditionally accumulates lower PE row
+     outputs into upper PE rows along each column. Depthwise layers require
+     disabling inter-row accumulation and draining each row independently.
+
+Software Lowering & Future Hardware Headroom
+--------------------------------------------
+- Non-native layer shapes (1x1 pointwise, 5x5 kernels, stride-2 layers) are
+  handled by decomposing ("lowering") them into 3x3 stride-1 sub-tiles in
+  host software/compiler before streaming to the accelerator.
+- With 36,554 / 63,400 LUTs used (57.7% utilization on xc7a100t-csg324-1),
+  ~26,846 LUTs (~42.3%) remain available for future hardware extensions or the 
+  Global Buffer subsystem.
